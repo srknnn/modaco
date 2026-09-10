@@ -1,0 +1,21 @@
+sku,name,category,price,stock
+BAG-001,Leather tote,Accessories,100,12
+BAG-002,Mini pouch,Accessories,40,30
+BAG-003,Belt bag,Accessories,55,8
+BAG-004,Shopper,Accessories,80,15
+BAG-005,Card holder,Accessories,25,40
+SHOE-001,Runner sneaker,Shoes,120,10
+SHOE-002,City loafer,Shoes,95,6
+SHOE-003,Rain boot,Shoes,70,18
+SHOE-004,Canvas slip-on,Shoes,45,22
+SHOE-005,Evening heel,Shoes,150,4
+TEE-001,Logo tee,Clothing,30,50
+TEE-002,Linen shirt,Clothing,60,16
+TEE-003,Wool knit,Clothing,90,9
+TEE-004,Denim jacket,Clothing,110,7
+TEE-005,Silk scarf top,Clothing,75,11
+BAG-006,Weekend duffel,Accessories,130,5
+SHOE-006,Trail boot,Shoes,160,3
+TEE-006,Hoodie,Clothing,65,25
+BAG-007,Phone sling,Accessories,35,19
+SHOE-007,Ballet flat,Shoes,85,13

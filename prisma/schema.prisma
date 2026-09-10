@@ -1,0 +1,114 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+enum PromotionStatus {
+  ACTIVE
+  CANCELLED
+}
+
+enum PromotionTargetType {
+  PRODUCT
+  CATEGORY
+}
+
+enum IngestJobStatus {
+  PENDING
+  SPLITTING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum IngestChunkStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Category {
+  id         String      @id @default(uuid())
+  name       String
+  slug       String      @unique
+  products   Product[]
+  promotions Promotion[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+}
+
+model Product {
+  id         String      @id @default(uuid())
+  sku        String      @unique
+  name       String
+  categoryId String
+  category   Category    @relation(fields: [categoryId], references: [id])
+  basePrice  Decimal     @db.Decimal(12, 2)
+  stock      Int         @default(0)
+  promotions Promotion[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([categoryId, basePrice])
+}
+
+model Promotion {
+  id           String                @id @default(uuid())
+  name         String
+  discountType DiscountType
+  value        Decimal               @db.Decimal(12, 2)
+  startAt      DateTime
+  endAt        DateTime
+  status       PromotionStatus       @default(ACTIVE)
+  targetType   PromotionTargetType?
+  productId    String?
+  product      Product?              @relation(fields: [productId], references: [id])
+  categoryId   String?
+  category     Category?             @relation(fields: [categoryId], references: [id])
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@index([status, startAt, endAt])
+  @@index([productId, status])
+  @@index([categoryId, status])
+}
+
+model IngestJob {
+  id              String          @id @default(uuid())
+  filename        String
+  storageKey      String
+  status          IngestJobStatus @default(PENDING)
+  totalChunks     Int             @default(0)
+  processedChunks Int             @default(0)
+  failedChunks    Int             @default(0)
+  error           String?
+  chunks          IngestChunk[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model IngestChunk {
+  id         String            @id @default(uuid())
+  jobId      String
+  job        IngestJob         @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  chunkIndex Int
+  storageKey String
+  status     IngestChunkStatus @default(PENDING)
+  rowCount   Int               @default(0)
+  error      String?
+  dlqAt      DateTime?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  @@unique([jobId, chunkIndex])
+}
