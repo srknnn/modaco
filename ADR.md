@@ -33,7 +33,7 @@ ModaCo needs a TypeScript / Express catalog API with two operational constraints
 
 ## 2. Decision (one paragraph)
 
-Promotions are **rules stored in Postgres**, not copies on each product. Ingest writes only `basePrice` after pricing rules. `effectivePrice` is computed on read. Storefront cache is optional speed, invalidated by a Redis **generation counter** (not by deleting 50k keys). Ingest is **accept file → 202 → queue → stream-split → N chunk jobs**; one worker function, N invocations.
+Promotions are **rules stored in Postgres**, not copies on each product. Ingest writes only `basePrice` after pricing rules. `effectivePrice` is computed on read. Storefront cache is optional speed, invalidated by a Redis **generation counter** (not by deleting 50k keys). Ingest is **accept file → 202 → split (files + ledger first) → enqueue N chunk jobs**; one worker function, N invocations. After three failed attempts a chunk goes to a **DLQ** (park, do not auto-replay). Replay is idempotent; there is no catalog-wide rollback.
 
 Local vs AWS is an **adapter mapping**. The portable units are `processChunk(storageKey)` and the promotion/read path. We do not deploy Lambda in this repo.
 
@@ -108,19 +108,19 @@ CSV
  │     HTTP 202                    process may die
  │
  ├─② Splitter worker              1 invocation
- │     stream CSV
- │     every CHUNK_SIZE rows:
- │       uploads/chunks/…/k.csv    (S3 slice)
- │       IngestChunk k             (Postgres)
- │       message → ingest-chunks   (SQS / BullMQ)
- │     IngestJob PROCESSING
+ │     stream CSV → chunk files + IngestChunk rows
+ │     set totalChunks, status PROCESSING
+ │     THEN enqueue PENDING slices → ingest-chunks
+ │     maybeCompleteJob            (fast workers cannot finish at totalChunks=0)
  │
  └─③ Chunk worker                 N invocations of the SAME function
        read slice
        applyPricingRules           (margin, not promotions)
        upsert Product by SKU
        mark chunk COMPLETED
-       when processed+failed == total → job COMPLETED
+       3 failures → ingest-chunks-dlq (parked; no worker)
+       replay-failed → main queue again
+       processed+failed == total → job COMPLETED or FAILED
 ```
 
 ### Stage ① — Accept only (`src/routes/ingest.route.ts`, `src/services/ingest.service.ts`)
@@ -203,7 +203,7 @@ Cancel (`POST …/cancel`) sets `CANCELLED` and bumps the same generation.
 `GET /api/v1/products/:id` (SKU or uuid) and `GET /api/v1/products?category=&page=&limit=&sort=effectivePrice|-effectivePrice`:
 
 1. Load product(s) from Postgres (`basePrice` is the shelf tag).
-2. Load active, in-window promotions for those product ids and category ids (`src/services/productPricing.ts`).
+2. Load **currently** in-window promotions (`activePromotionWhere()` uses `new Date()` **per request**, not at process start).
 3. `effectivePrice(base, productPromo, categoryPromo)`.
 4. Optionally cache (next section).
 
@@ -230,6 +230,7 @@ Read path (`src/cache/store.ts`):
 1. `GET category_gen:{categoryId}` → `2` (missing → `0`).
 2. Build `product:{id}:g2` (not an HTTP path; a Redis key).
 3. Hit → return. Miss → compute, `SET … EX 60`.
+4. If Redis throws, skip cache and serve from Postgres (ingest still needs Redis for BullMQ).
 
 After assign, `INCR` → `3`. The next GET asks for `g3`. Key `g2` may still exist; **nobody reads it**. There is no `/v3` URL.
 
@@ -262,6 +263,7 @@ Pricing rules (A) and promotions (B) are different layers. Conflating them is th
 
 ## 7. Trade-offs
 
+- **No catalog-wide rollback.** A dead chunk is parked on the DLQ after 3 attempts. Earlier upserts stay. `POST /api/v1/ingest/jobs/:id/replay-failed` re-queues FAILED slices. The DLQ has no worker; it does not run on insert.
 - **Cache fail-open.** Redis errors on `GET /products` skip the cache and hit Postgres; ingest still needs Redis for BullMQ.
 - **BullMQ ≠ SQS.** Same job shapes; Redis is a stand-in. Production would swap the queue adapter, keep `processChunk`.
 - **Generation vs TTL.** `INCR` makes the next key miss immediately. Without a bump, a blob can stay wrong until 45–60s expire.
@@ -275,6 +277,6 @@ Pricing rules (A) and promotions (B) are different layers. Conflating them is th
 
 Prereq: `docker compose up -d`, migrations, `npm run dev`, `npm run worker`.
 
-**A:** `POST /api/v1/ingest/jobs` with `samples/vendor-small.csv` → poll `GET /api/v1/ingest/jobs/:id` until `totalChunks: 4` and `COMPLETED`. Disk: `uploads/chunks/<id>/0.csv`…`3.csv`. `BAG-001` `basePrice` is `110` (CSV price `100` + 10% margin).
+**A:** `POST /api/v1/ingest/jobs` with `samples/vendor-small.csv` → poll `GET /api/v1/ingest/jobs/:id` until `totalChunks: 4` and `COMPLETED`. Disk: `uploads/chunks/<id>/0.csv`…`3.csv`. `BAG-001` `basePrice` is `110` (CSV price `100` + 10% margin). A chunk that fails three times is `FAILED` + `dlqAt`; replay with `POST /api/v1/ingest/jobs/:id/replay-failed` (does not undo SKUs from successful chunks).
 
 **B:** `GET /api/v1/products/BAG-001` (creates `product:<uuid>:gN`). Assign Accessories 50% → `category_gen` increments; next GET uses `gN+1` and `effectivePrice` `55`. `POST /api/v1/products` into Accessories with the sale on → `effectivePrice` already discounted; no extra ingest and no generation required for that new SKU.
